@@ -1,26 +1,45 @@
 import { NextResponse } from 'next/server'
 import { supabase } from '@/lib/supabase'
-import OpenAI from 'openai'
+import { VertexAI } from '@google-cloud/vertexai'
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+// Initialize Google Cloud Vertex AI
+const vertexAI = new VertexAI({
+  project: process.env.GOOGLE_PROJECT_ID,
+  location: 'us-central1' // Standard Google Cloud location
+});
+
+// Select the Gemini model (Google's competitor to GPT-4)
+const model = vertexAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
 export async function POST(request: Request, { params }: { params: { id: string } }) {
-  // 1. Get user input
-  const { input } = await request.json()
-  
-  // 2. Fetch the agent's "Brain" (System Prompt) from DB
-  const { data: agent } = await supabase.from('agents').select('system_prompt').eq('id', params.id).single()
-  
-  if (!agent) return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
+  try {
+    // 1. Get User Input
+    const { input } = await request.json()
 
-  // 3. Run the AI
-  const completion = await openai.chat.completions.create({
-    model: "gpt-4o-mini", // Cost effective model
-    messages: [
-      { role: "system", content: agent.system_prompt },
-      { role: "user", content: input }
-    ],
-  })
+    // 2. Fetch the Agent's "Persona" from your Open Source DB
+    const { data: agent } = await supabase
+      .from('agents')
+      .select('system_prompt')
+      .eq('id', params.id)
+      .single()
+    
+    if (!agent) return NextResponse.json({ error: 'Agent not found' }, { status: 404 })
 
-  return NextResponse.json({ response: completion.choices[0].message.content })
+    // 3. Send to Google Gemini
+    const chat = model.startChat({
+      history: [
+        { role: 'user', parts: [{ text: `SYSTEM INSTRUCTION: ${agent.system_prompt}` }] },
+        { role: 'model', parts: [{ text: "Understood. I will act as this agent." }] }
+      ],
+    });
+
+    const result = await chat.sendMessage(input);
+    const response = result.response.candidates[0].content.parts[0].text;
+
+    return NextResponse.json({ response })
+
+  } catch (error: any) {
+    console.error("Google AI Error:", error)
+    return NextResponse.json({ error: error.message || 'AI generation failed' }, { status: 500 })
+  }
 }
